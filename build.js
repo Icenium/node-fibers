@@ -36,8 +36,8 @@ if (!force) {
 		console.log('`'+ modPath+ '` exists; testing');
 		cp.execFile(process.execPath, ['quick-test'], function(err, stdout, stderr) {
 			if (err || stdout !== 'pass' || stderr) {
-				console.log('Problem with the binary; manual build incoming');
-				build();
+				// console.log('Problem with the binary; manual build incoming');
+				// build();
 			} else {
 				console.log('Binary is fine; exiting');
 			}
