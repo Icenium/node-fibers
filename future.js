@@ -2,10 +2,14 @@
 var Fiber = require('./fibers');
 var util = require('util');
 module.exports = Future;
-Function.prototype.future = function() {
+Function.prototype.future = function(detach) {
 	var fn = this;
 	var ret = function() {
-		return new FiberFuture(fn, this, arguments);
+		var future = new FiberFuture(fn, this, arguments);
+		if (detach) {
+			future.detach();
+		}
+		return future;
 	};
 	ret.toString = function() {
 		return '<<Future '+ fn+ '.future()>>';
@@ -13,19 +17,43 @@ Function.prototype.future = function() {
 	return ret;
 };
 
-Future.activeFutures = [];
-var activeFutureCtorStack = [];
+var cachedFiberFutures = [];
+
+function getCachedFiberFuture() {
+	for (var index = 0; index < cachedFiberFutures.length; index++) {
+		var element = cachedFiberFutures[index];
+		if(element.fiber === Fiber.current) {
+			return element;
+		}
+	}
+}
 
 function addActiveFuture(future) {
-	Future.activeFutures.push(future);
-	activeFutureCtorStack.push(new Error().stack);
+	var cachedFiberFuture = getCachedFiberFuture();
+	if(!cachedFiberFuture) {
+		cachedFiberFuture = {
+			activeFutures: [],
+			fiber: Fiber.current,
+			activeFuturesCtorStacks: []
+		};
+		cachedFiberFutures.push(cachedFiberFuture);
+	}
+
+	cachedFiberFuture.activeFutures.push(future);
+	cachedFiberFuture.activeFuturesCtorStacks.push(new Error().stack);
 }
 
 function deleteActiveFuture(future) {
-	var index = Future.activeFutures.indexOf(future);
-	if (index !== -1) {
-		Future.activeFutures.splice(index, 1);
-		activeFutureCtorStack.splice(index, 1);
+	var cachedFiberFuture = getCachedFiberFuture();
+	if(cachedFiberFuture) {
+		var index = cachedFiberFuture.activeFutures.indexOf(future);
+		if (index !== -1) {
+			cachedFiberFuture.activeFutures.splice(index, 1);
+			cachedFiberFuture.activeFuturesCtorStacks.splice(index, 1);
+			cachedFiberFutures = cachedFiberFutures.filter(function(f){
+				return f.activeFutures.length;
+			});
+		}
 	}
 }
 
@@ -132,11 +160,12 @@ Future.fromResult = function(value) {
 }
 
 Future.assertNoFutureLeftBehind = function() {
-	if (Future.activeFutures.length > 0) {
+	var cachedFiberFuture = getCachedFiberFuture();
+	if (cachedFiberFuture && cachedFiberFuture.activeFutures.length) {
 		var message = ["There are outstanding futures. Construction call stacks:"];
-		for (var i = 0; i < Future.activeFutures.length; ++i) {
+		for (var i = 0; i < cachedFiberFuture.activeFutures.length; ++i) {
 			message.push("#" + (i+1).toString());
-			var stack = activeFutureCtorStack[i].split("\n");
+			var stack = cachedFiberFuture.activeFuturesCtorStacks[i].split("\n");
 			stack.shift();
 			while (stack[0] && stack[0].indexOf("future.js") !== -1)
 				stack.shift();
@@ -280,26 +309,44 @@ Future.prototype = {
 			throw new Error('Future must resolve before value is ready');
 		} else if (this.error) {
 			// Link the stack traces up
-			var stack = {}, error = this.error instanceof Object ? this.error : new Error(this.error);
-			var longError = Object.create(error);
-			Error.captureStackTrace(stack, Future.prototype.get);
-			Object.defineProperty(longError, 'stack', {
-				get: function() {
-					var baseStack = error.stack;
-					if (baseStack) {
-						baseStack = baseStack.split('\n');
-						return [baseStack[0]]
-							.concat(stack.stack.split('\n').slice(1))
-							.concat('    - - - - -')
-							.concat(baseStack.slice(1))
-							.join('\n');
-					} else {
-						return stack.stack;
-					}
-				},
-				enumerable: true,
-			});
-			throw longError;
+			var error = this.error;
+			var localStack = {};
+			Error.captureStackTrace(localStack, Future.prototype.get);
+			var futureStack = Object.getOwnPropertyDescriptor(error, 'futureStack');
+			if (!futureStack) {
+				futureStack = Object.getOwnPropertyDescriptor(error, 'stack');
+				if (futureStack) {
+					Object.defineProperty(error, 'futureStack', futureStack);
+				}
+			}
+			if (futureStack && futureStack.get) {
+				Object.defineProperty(error, 'stack', {
+					get: function() {
+						var stack = futureStack.get.apply(error);
+						if (stack) {
+							stack = stack.split('\n');
+							return [stack[0]]
+								.concat(localStack.stack.split('\n').slice(1))
+								.concat('    - - - - -')
+								.concat(stack.slice(1))
+								.join('\n');
+						} else {
+							return localStack.stack;
+						}
+					},
+					set: function(stack) {
+						Object.defineProperty(error, 'stack', {
+							value: stack,
+							configurable: true,
+							enumerable: false,
+							writable: true,
+						});
+					},
+					configurable: true,
+					enumerable: false,
+				});
+			}
+			throw error;
 		} else {
 			return this.value;
 		}
