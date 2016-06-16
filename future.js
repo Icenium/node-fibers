@@ -299,6 +299,19 @@ Future.wait = function wait() {
 	}
 };
 
+/**
+ * Return a Future that waits on an ES6 Promise.
+ */
+Future.fromPromise = function(promise) {
+	var future = new Future;
+	promise.then(function(val) {
+		future.return(val);
+	}, function(err) {
+		future.throw(err);
+	});
+	return future;
+};
+
 Future.prototype = {
 	/**
 	 * Return the value of this future. If the future hasn't resolved yet this will throw an error.
@@ -525,7 +538,25 @@ Future.prototype = {
 	},
 
 	/**
+	 * Returns an ES6 Promise
+	 */
+	promise: function() {
+		var that = this;
+		return new Promise(function(resolve, reject) {
+			that.resolve(function(err, val) {
+				if (err) {
+					reject(err);
+				} else {
+					resolve(val);
+				}
+			});
+		});
+	},
+
+	/**
 	 * Waits for the future to settle. If the future throws an error, then wait() will rethrow that error.
+	 * Differs from its functional counterpart in that it actually resolves the future. Thus if the
+	 * future threw, future.wait() will throw.
 	 */
 	wait: function() {
 		if (this.isResolved()) {
